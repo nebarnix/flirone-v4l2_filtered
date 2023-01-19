@@ -31,6 +31,22 @@
 
 #include "plank.h"
 
+//config variables to be set by parameters passed
+//added by Nebarnix 2023
+  int lockRange = 0; //lock the range to the initial frame - this shoulld be either an input or a parameter or both
+  
+  int setMinRange = 0; //set the min range manually
+  int setMaxRange = 0; //set the max range manually
+  
+  float setMinTemp = 10;
+  float setMaxTemp = 40;
+  
+  int filter = 1;//ok to always leave this on
+
+  #define FILTER_SLOW 0.05 //slow
+  #define FILTER_MED  0.1 //med
+  #define FILTER_FAST 0.5 //fast
+
 // -- define v4l2 ---------------
 #include <linux/videodev2.h>
 #include <sys/ioctl.h>
@@ -130,14 +146,27 @@ void font_write(unsigned char *fb, int x, int y, const char *string)
 
 double raw2temperature(unsigned short RAW)
 {
+ 
  // mystery correction factor
- RAW *=4;
+ //RAW *=4;
+ RAW = RAW << 2;
  // calc amount of radiance of reflected objects ( Emissivity < 1 )
  double RAWrefl=PlanckR1/(PlanckR2*(exp(PlanckB/(TempReflected+273.15))-PlanckF))-PlanckO;
  // get displayed object temp max/min
  double RAWobj=(RAW-(1-Emissivity)*RAWrefl)/Emissivity;
- // calc object temperature
+ // calc object temperature 
  return PlanckB/log(PlanckR1/(PlanckR2*(RAWobj+PlanckO))+PlanckF)-273.15;  
+}
+
+//inverse of above, Nebarnix 2023
+unsigned short temperature2raw(double Temp)
+{
+ //3555 = 34.0; //sanity check
+ 
+ double RAWobj  = PlanckR1/(PlanckR2*(exp(PlanckB/(Temp+273.15))-PlanckF)) - PlanckO;
+ double RAWrefl = PlanckR1/(PlanckR2*(exp(PlanckB/(TempReflected+273.15))-PlanckF))-PlanckO;
+ double RAWd    = Emissivity*RAWobj + (1-Emissivity)*RAWrefl; 
+ return (unsigned short)(RAWd) >> 2;
 }
 
 
@@ -286,7 +315,7 @@ void vframe(char ep[],char EP_error[], int r, int actual_length, unsigned char b
     {
         //reset buff pointer
         buf85pointer=0;
-        printf("Reset buffer because of bad Magic Byte!\n");
+        //printf("Reset buffer because of bad Magic Byte!\n");
         return;
     }
       
@@ -330,14 +359,27 @@ void vframe(char ep[],char EP_error[], int r, int actual_length, unsigned char b
   
   fb_proc2 = malloc(160 * 128 * 3 ); // 8x8x8  Bit RGB buffer 
 
-  int min = 0x10000, max = 0;
+  static int min = 0x10000, max = 0;
+  static float filteredMin, filteredMax;
   float rms = 0;
 
 // Make a unsigned short array from what comes from the thermal frame
 // find the max, min and RMS (not used yet) values of the array
   int maxx, maxy;
+  static int firstRun=1;
+  int setMin = temperature2raw(setMinTemp); //set min to temp
+  int setMax = temperature2raw(setMaxTemp); //set max to temp
+
+  float filterAlpha= FILTER_MED; //med
+
+  if(!lockRange)
+    {
+    min = 0x10000;
+    max = 0;
+    }
+
   for (y = 0; y < 120; ++y) 
-  {
+    {
     for (x = 0; x < 160; ++x) {
       if (x<80) 
          v = buf85[2*(y * 164 + x) +32]+256*buf85[2*(y * 164 + x) +33];
@@ -345,16 +387,64 @@ void vframe(char ep[],char EP_error[], int r, int actual_length, unsigned char b
          v = buf85[2*(y * 164 + x) +32+4]+256*buf85[2*(y * 164 + x) +33+4];   
       pix[y * 160 + x] = v;   // unsigned char!!
       
+    if((firstRun && lockRange) || !lockRange ) //only do this once for the first run if the range is locked
+      {
       if (v < min) min = v;
       if (v > max) { max = v; maxx = x; maxy = y; }
-      rms += v * v;      
+      } 
+    rms += v * v;      
     }
   }
     
-  // RMS used later
+// RMS used later
 //  rms /= 160 * 120;
 //  rms = sqrtf(rms);
   
+
+//filter the min and max values
+  if(filter)
+    {
+    if(firstRun)
+      {
+      filteredMax = max;
+      filteredMin = min;
+      }
+    else
+      {
+      filteredMax = max*filterAlpha+(1-filterAlpha)*filteredMax;
+      filteredMin = min*filterAlpha+(1-filterAlpha)*filteredMin;
+      }
+    min = filteredMin;
+    max = filteredMax;
+    }
+
+//implement set max and min points
+  if(setMinRange)
+    min = setMin;
+
+  if(setMaxRange)
+    max = setMax;
+
+  if(max < min)
+    {
+    if(setMaxRange && setMinRange)
+      { //swap max and min, simple user error
+      int a = max;
+      max = min;
+      min = a;
+      }
+    else if(setMaxRange) //data is out of range HOT
+      min=max+10; //this will keep the screen white colored
+    else if(setMinRange) //data is out of range COLD
+      max=min-10; //this will keep the screen black colored
+    //else
+    // { //swap max and min, should never happen?
+    // int a = max;
+    // max = min;
+    // min = a;
+    // }
+    }
+
 // scale the data in the array
   int delta = max - min;
   if (!delta) delta = 1;   // if max = min we have divide by zero
@@ -363,7 +453,13 @@ void vframe(char ep[],char EP_error[], int r, int actual_length, unsigned char b
   for (y = 0; y < 120; ++y)    //120
   {
     for (x = 0; x < 160; ++x) {   //160
-      int v = (pix[y * 160 + x] - min) * scale >> 8;
+      //clip to minimum and max
+	if(pix[y * 160 + x] < min)
+           pix[y*160 + x] = min;
+	else if(pix[y * 160 + x] > max) 
+           pix[y*160 + x] = max;
+
+	int v = (pix[y * 160 + x] - min) * scale >> 8;
 
 // fb_proc is the gray scale frame buffer
       fb_proc[y * 160 + x] = v;   // unsigned char!!
@@ -381,6 +477,7 @@ void vframe(char ep[],char EP_error[], int r, int actual_length, unsigned char b
   // calc medium of 2x2 center pixels
   int med = (pix[59 * 160 + 79]+pix[59 * 160 + 80]+pix[60 * 160 + 79]+pix[60 * 160 + 80])/4;
   sprintf(st2," %.1f/%.1f/%.1f'C", raw2temperature(min),raw2temperature(med),raw2temperature(max));
+  //sprintf(st2," %d=%.1f=%d'C", med,raw2temperature(med),temperature2raw(raw2temperature(med)));
   strcat(st1, st2);
   
   #define MAX 26 // max chars in line  160/6=26,6 
@@ -399,9 +496,10 @@ void vframe(char ep[],char EP_error[], int r, int actual_length, unsigned char b
   if (maxy < 0) maxy = 0;
   if (maxx > 150) maxx = 150;
   if (maxy > 110) maxy = 110;
-
-  font_write(fb_proc, 160-6, maxy, "<");
-  font_write(fb_proc, maxx, 120-8, "|");
+  
+  //didn't like this, uncomment to enable
+  //font_write(fb_proc, 160-6, maxy, "<");
+  //font_write(fb_proc, maxx, 120-8, "|");
 
   for (y = 0; y < 128; ++y) 
   {
@@ -445,6 +543,7 @@ void vframe(char ep[],char EP_error[], int r, int actual_length, unsigned char b
   free(fb_proc);                    // thermal RAW
   free(fb_proc2);                   // visible jpg
     
+firstRun = 0;
 }
 
  static int find_lvr_flirusb(void)
@@ -797,6 +896,4 @@ int main(int argc, char **argv)
   {
     EPloop(colormap);
   }
-
-  
 } 
