@@ -3,15 +3,15 @@
 Fork of fnoop's cleaned up version. 
 
 Added: 
-(compile time) options for:
-Setting the minimum value to a preset temperature
-Setting the maximum value to a preset temperature
-Locking the min and max to the first frame value
-Exponential filter with three speeds (fast, medium, slow) to transition min and max values smoothly
+* (compile time) options for:
+* Setting the minimum value to a preset temperature
+* Setting the maximum value to a preset temperature
+* Locking the min and max to the first frame value
+* Exponential filter with three speeds (fast, medium, slow) to transition min and max values smoothly
 
 Other changes:
-Clipping of data to min and max values to support above
-New Function temperature2raw which performs raw2temperature but backwards
+* Clipping of data to min and max values to support above
+* New Function temperature2raw which performs raw2temperature but backwards
 
 TODO: 
 * Add some kind of command line parameter parser to expose the setting variables to the outside world
