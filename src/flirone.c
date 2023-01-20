@@ -20,6 +20,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdbool.h>
 #include <libusb.h>
 #include <unistd.h>
 #include <time.h>
@@ -41,11 +42,14 @@
   float setMinTemp = 10;
   float setMaxTemp = 40;
   
-  int filter = 1;//ok to always leave this on
-
+  int filter = 0;//ok to always leave this on
+  float filterAlpha;
   #define FILTER_SLOW 0.05 //slow
   #define FILTER_MED  0.1 //med
   #define FILTER_FAST 0.5 //fast
+
+int enableCrossHair = 0;
+int enableMaxTempLocator = 0;
 
 // -- define v4l2 ---------------
 #include <linux/videodev2.h>
@@ -370,7 +374,7 @@ void vframe(char ep[],char EP_error[], int r, int actual_length, unsigned char b
   int setMin = temperature2raw(setMinTemp); //set min to temp
   int setMax = temperature2raw(setMaxTemp); //set max to temp
 
-  float filterAlpha= FILTER_MED; //med
+  //float filterAlpha= FILTER_MED; //med
 
   if(!lockRange)
     {
@@ -487,7 +491,8 @@ void vframe(char ep[],char EP_error[], int r, int actual_length, unsigned char b
   font_write(fb_proc, 1, 120, st2);
 
   // show crosshairs, remove if required 
-  font_write(fb_proc, 80-2, 60-3, "+");
+  if(enableCrossHair)
+    font_write(fb_proc, 80-2, 60-3, "+");
 
   maxx -= 4;
   maxy -= 4;
@@ -497,9 +502,12 @@ void vframe(char ep[],char EP_error[], int r, int actual_length, unsigned char b
   if (maxx > 150) maxx = 150;
   if (maxy > 110) maxy = 110;
   
-  //didn't like this, uncomment to enable
-  //font_write(fb_proc, 160-6, maxy, "<");
-  //font_write(fb_proc, maxx, 120-8, "|");
+  //max temp locator
+  if(enableMaxTempLocator)
+    {
+    font_write(fb_proc, 160-6, maxy, "<");
+    font_write(fb_proc, maxx, 120-8, "|");
+    }
 
   for (y = 0; y < 128; ++y) 
   {
@@ -877,20 +885,130 @@ firstRun = 0;
  	return r >= 0 ? r : -r;
  }
 
+void printUsage()
+{
+fprintf (stderr, "\nFlirOne V4L2Loopback\n");
+fprintf (stderr, "Usage: flirone -p [PALETTE FILE] [OPTION]... \n");
+fprintf (stderr, "Starts a V4L2Loopback device using the FlirOne Thermal Camera\n");
+fprintf (stderr, "Requires: LibUSB, loaded V4L2Loopback kernel module with three devices\n");
+fprintf (stderr, "Load kernel module via 'sudo modprobe v4l2loopback exclusive_caps=0,0 video_nr=1,2,3'\n");
+fprintf (stderr, "\n\nMandatory Arguments:\n");
+fprintf (stderr, "\t-p [PALETTE FILE] \t\tSpecifies the Palette file to use\n");
+fprintf (stderr, "\nOptional Arguments:\n");
+fprintf (stderr, "\t -h\t\t\t\tPrint this help screen\n");
+fprintf (stderr, "\t -f F|M|S\t\t\tFilter max/min limits using Fast, Medium, Slow filter\n");
+fprintf (stderr, "\t -l\t\t\t\tLocks min/max limits to the first frame available\n");
+fprintf (stderr, "\t -H [HIGHTEMP]\t\t\tSets the max limit to HIGHTEMP deg C\n");
+fprintf (stderr, "\t -L [LOWTEMP]\t\t\tSets the min limit to LOWTEMP deg C\n");
+fprintf (stderr, "\t -x\t\t\t\tEnables the centeral measurement cross hairs\n");
+fprintf (stderr, "\t -X\t\t\t\tEnables the max temp coordinate pointer\n");
+}
+
 int main(int argc, char **argv)
 {
     int i;
     unsigned char colormap[768];
     FILE *fp;
+    char *palFile = NULL;
+int c;
 
-	if(argc < 2) {
-		fprintf(stderr, "\nUsage:flir8o palette.raw\n");
-		exit(1);
-	}
+while ((c = getopt (argc, argv, "xXhf:lp:H:L:")) != -1)
+    switch (c)
+      {
+      case 'x':
+	enableCrossHair=1;
+	fprintf(stderr, "Crosshair enabled\n");
+	break;
+      case 'X':
+	enableMaxTempLocator = 1;
+	fprintf(stderr, "Max temp locator enabled\n");
+	break;       
+      case 'h':
+	printUsage();
+	exit(1);
+	break; 
+      case 'f':
+        filter = 1;
+	if(optarg[0] == 'F' || optarg[0] == 'f')
+	  {
+	  fprintf(stderr, "Filter set to Fast\n");
+          filterAlpha = FILTER_FAST;
+	  }
+	else if(optarg[0] == 'M' || optarg[0] == 'm')
+	  {
+          fprintf(stderr, "Filter set to Medium\n");
+          filterAlpha = FILTER_MED;
+	  }
+        else if(optarg[0] == 'S' || optarg[0] == 's')
+	  {
+          fprintf(stderr, "Filter set to Slow\n");
+          filterAlpha = FILTER_SLOW;
+	  }
+        else
+	   {
+	   fprintf(stderr, "\nERROR: Filter options are [F]ast [M]edium or [S]low\n");
+           printUsage();
+	   exit(1);
+	   }
+        break;
+      case 'l':
+        lockRange = 1;
+        break;
+      case 'p':
+        palFile = optarg;
+        break;
+      case 'H':
+        setMaxTemp = atof(optarg);
+        fprintf(stderr, "Max Temp Set to: %f deg C\n",setMaxTemp);
+        setMaxRange = 1;
+        break;
+      case 'L':
+        setMinTemp = atof(optarg);
+        fprintf(stderr, "Min Temp Set to: %f deg C\n",setMinTemp);
+        setMinRange = 1;
+        break;
 
-    fp = fopen(argv[1], "rb");
-    fread(colormap, sizeof(unsigned char), 768, fp);  // read 256 rgb values
+      case '?':
+        if (optopt == 'p')
+          fprintf (stderr, "Option -%c requires an argument.\n", optopt);
+        else if (isprint (optopt))
+          fprintf (stderr, "Unknown option `-%c'.\n", optopt);
+        else
+          fprintf (stderr,
+                   "Unknown option character `\\x%x'.\n",
+                   optopt);
+        return 1;
+      default:
+        abort ();
+      }
+
+//	if(argc < 2) {
+//		fprintf(stderr, "\nUsage:flir8o palette.raw\n");
+//		exit(1);
+//	}
+
+    if(palFile == NULL) 
+      { 
+      fprintf(stderr, "\nERROR: No Palette File Provided!\n");
+      printUsage();	
+      exit(1);
+      }
+
+    //fp = fopen(argv[1], "rb");
+    printf("\nUsing Palette: %s\n", palFile);
+    fp = fopen(palFile, "rb");
+if(fp == NULL) 
+      { 
+      fprintf(stderr, "\nERROR: Could Not Open Palette File!\n");
+      printUsage();	
+      exit(1);
+      }    
+
+fread(colormap, sizeof(unsigned char), 768, fp);  // read 256 rgb values
+//printf("2\n");
     fclose(fp);
+
+//printf("3\n");
 
   while (1)
   {
