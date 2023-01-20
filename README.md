@@ -2,8 +2,8 @@
 
 Fork of fnoop's cleaned up version. 
 
-Added: 
-* Command line options for:
+Added: <br>
+Command line options for:<br>
 * Setting the minimum value to a preset temperature
 * Setting the maximum value to a preset temperature
 * Locking the min and max to the first frame value
