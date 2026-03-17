@@ -1,0 +1,6 @@
+#! /bin/sh
+
+killall flirone
+(cd /home/user/flirone-v4l2-master_filtered/scripts/ && ./StartFlir&)
+sleep 1
+/home/user/flirone-v4l2-master/scripts/gstreamer_thermal
